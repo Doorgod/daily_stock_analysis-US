@@ -1,0 +1,89 @@
+name: 美股每日自动分析推送
+
+on:
+  # 定时触发 - 每天北京时间 05:30 (美股收盘后)
+  schedule:
+    - cron: '30 21 * * 1-5'  # 周一到周五，UTC 21:30 = 北京时间 05:30 (次日)
+
+  # 手动触发
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: '运行模式'
+        required: true
+        default: 'full'
+        type: choice
+        options:
+          - full          # 完整分析
+          - market-only   # 仅大盘复盘
+          - stocks-only   # 仅股票分析
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+      
+      - name: 设置 Python 环境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          # 如果你的依赖里没写这两个，Actions 运行会报错，这里做个保底
+          pip install pandas requests google-generativeai 
+      
+      - name: 创建必要目录
+        run: mkdir -p data logs reports
+      
+      - name: 执行美股分析
+        env:
+          # --- Gemini AI 核心配置 ---
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ secrets.GEMINI_MODEL || 'gemini-3-flash-preview' }}
+          GEMINI_MODEL_FALLBACK: ${{ secrets.GEMINI_MODEL_FALLBACK || 'gemini-2.5-flash' }}
+          GEMINI_REQUEST_DELAY: '3.0'
+          
+          # --- 搜索服务 ---
+          BOCHA_API_KEYS: ${{ secrets.BOCHA_API_KEYS }}
+          TAVILY_API_KEYS: ${{ secrets.TAVILY_API_KEYS }}
+          SERPAPI_API_KEYS: ${{ secrets.SERPAPI_API_KEYS }}
+          
+          # --- 通知渠道 ---
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          WECHAT_WEBHOOK_URL: ${{ secrets.WECHAT_WEBHOOK_URL }}
+          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+          
+          # --- 股票配置 ---
+          # 建议在 GitHub Repository Secrets 里配置 STOCK_LIST，例如 "AAPL,TSLA,NVDA"
+          STOCK_LIST: ${{ secrets.STOCK_LIST || 'AAPL' }} 
+          
+        run: |
+          MODE="${{ github.event.inputs.mode || 'full' }}"
+          echo "开始分析任务..."
+          echo "当前北京时间: $(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')"
+          
+          if [ "$MODE" = "market-only" ]; then
+            python main.py --market-review
+          elif [ "$MODE" = "stocks-only" ]; then
+            python main.py --no-market-review
+          else
+            python main.py
+          fi
+      
+      - name: 上传报告归档
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stock-reports-${{ github.run_number }}
+          path: |
+            reports/
+            logs/
+          retention-days: 7
